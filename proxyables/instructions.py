@@ -18,6 +18,9 @@ def create_get_instruction(key: str) -> ProxyInstruction:
 def create_apply_instruction(args: List[Any]) -> ProxyInstruction:
     return create_instruction_unsafe(ProxyInstructionKinds.APPLY, args)
 
+def create_construct_instruction(args: List[Any]) -> ProxyInstruction:
+    return create_instruction_unsafe(ProxyInstructionKinds.CONSTRUCT, args)
+
 def create_return_instruction(value: Any) -> ProxyInstruction:
     return create_instruction_unsafe(ProxyInstructionKinds.RETURN, value)
 

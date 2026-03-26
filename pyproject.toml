@@ -1,7 +1,9 @@
 [project]
 name = "proxyables-python"
 version = "0.1.0"
-description = "Add your description here"
+description = "Peer-to-peer remote object proxies over multiplexed streams"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "msgpack>=1.1.0",
+]

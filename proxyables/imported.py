@@ -2,6 +2,7 @@
 import asyncio
 from typing import Any, List, Optional
 import inspect
+import msgpack
 from .types import (
     ProxyInstruction, ProxyInstructionKinds, ProxyValueKinds, ProxyError
 )
@@ -12,10 +13,23 @@ from .instructions import (
 from .yamux.session import Session
 from .stream_pool import StreamPool
 from .encoder import encode
-from .decoder import decode
+from .decoder import decode, decode_hook
 from .muid import make as muid
 from .registry import ObjectRegistry
 import weakref
+
+
+async def read_message(stream):
+    unpacker = msgpack.Unpacker(raw=False, object_hook=decode_hook)
+    while True:
+        for item in unpacker:
+            return item
+        chunk = await stream.read()
+        if not chunk:
+            if unpacker.tell() == 0:
+                return b""
+            raise BrokenPipeError("Incomplete response")
+        unpacker.feed(chunk)
 
 class ImportedProxyable:
     def __init__(self, session: Session, listen: bool = True):
@@ -36,11 +50,11 @@ class ImportedProxyable:
 
     async def _handle_stream(self, stream):
         try:
-            data = await stream.read()
+            data = await read_message(stream)
             if not data:
                 return 
             
-            instruction = decode(data)
+            instruction = data if isinstance(data, ProxyInstruction) else decode(data)
             # Support execute and release
             result = await self._execute_incoming(instruction)
             
@@ -177,11 +191,11 @@ class ProxyCursor:
             await stream.write(encode(exec_instr))
             
             # Receive
-            data = await stream.read()
+            data = await read_message(stream)
             if not data:
                 raise BrokenPipeError("Empty response")
                 
-            res_instr = decode(data) # Should be RETURN or THROW
+            res_instr = data if isinstance(data, ProxyInstruction) else decode(data) # Should be RETURN or THROW
             
             if res_instr.kind == ProxyInstructionKinds.THROW:
                  # Re-raise error

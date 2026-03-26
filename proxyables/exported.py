@@ -2,6 +2,7 @@
 import asyncio
 import inspect
 from typing import Any, Optional, List, Dict
+import msgpack
 from .yamux.session import Session
 from .registry import ObjectRegistry
 from .types import (
@@ -13,10 +14,23 @@ from .instructions import (
     create_instruction_unsafe
 )
 from .encoder import encode
-from .decoder import decode
+from .decoder import decode, decode_hook
 from .muid import make as muid
 
 from .imported import ImportedProxyable, ProxyCursor
+
+
+async def read_message(stream):
+    unpacker = msgpack.Unpacker(raw=False, object_hook=decode_hook)
+    while True:
+        for item in unpacker:
+            return item
+        chunk = await stream.read()
+        if not chunk:
+            if unpacker.tell() == 0:
+                return b""
+            raise BrokenPipeError("Incomplete request")
+        unpacker.feed(chunk)
 
 class ExportedProxyable:
     def __init__(self, session: Session, obj: Any, registry: Optional[ObjectRegistry] = None):
@@ -38,11 +52,11 @@ class ExportedProxyable:
     async def _handle_stream(self, stream):
         # Read request
         try:
-            data = await stream.read()
+            data = await read_message(stream)
             if not data:
                 return 
             
-            instruction = decode(data)
+            instruction = data if isinstance(data, ProxyInstruction) else decode(data)
             # Should be EXECUTE kind
             result = await self._execute(instruction)
             
