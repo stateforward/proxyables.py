@@ -42,7 +42,7 @@ class Session:
                 
                 #Read Payload
                 payload = b""
-                if frame.length > 0:
+                if frame.type == TYPE_DATA and frame.length > 0:
                     try:
                         payload = await self.stream.readexactly(frame.length)
                     except asyncio.IncompleteReadError:
@@ -57,6 +57,15 @@ class Session:
             await self.close()
 
     async def _handle_frame(self, frame: Frame):
+        if frame.type == TYPE_PING:
+            if frame.flags & FLAG_SYN:
+                await self.write_frame(TYPE_PING, FLAG_ACK, 0)
+            return
+
+        if frame.type == TYPE_GO_AWAY:
+            await self.close()
+            return
+
         stream = self.streams.get(frame.stream_id)
         
         if frame.flags & FLAG_SYN:
@@ -73,11 +82,11 @@ class Session:
             if frame.type == TYPE_DATA:
                 if frame.length > 0:
                     stream.feed_data(frame.payload)
-                if frame.flags & FLAG_FIN:
-                    stream.on_fin()
             
             # TODO: WindowUpdate handling
-            
+
+            if frame.flags & FLAG_FIN:
+                stream.on_fin()
             if frame.flags & FLAG_RST:
                 stream.on_fin() # Treat reset as close for now
                 del self.streams[frame.stream_id]

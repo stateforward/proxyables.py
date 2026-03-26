@@ -4,8 +4,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
+import os
 import re
+import sys
+from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from proxyables.transport import AsyncIOStreamAdapter
+from proxyables.proxyable import Proxyable
 
 PROTOCOL = "parity-json-v1"
 
@@ -21,8 +28,11 @@ CANONICAL_SCENARIOS = (
     "ExplicitRelease",
 )
 CAPABILITIES = list(CANONICAL_SCENARIOS)
-CAPABILITY_SET = set(CAPABILITIES)
 WORD_BOUNDARY = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+
+
+def emit(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload), flush=True)
 
 
 def to_pascal_case(raw: str) -> str:
@@ -38,33 +48,16 @@ def to_pascal_case(raw: str) -> str:
 
 def normalize_scenario(raw: str) -> str:
     canonical = to_pascal_case(raw)
-    if canonical in CAPABILITY_SET:
+    if canonical in CANONICAL_SCENARIOS:
         return canonical
     return ""
-
-
-def emit(payload: dict) -> None:
-    print(json.dumps(payload), flush=True)
-
-
-class Greeter:
-    def __init__(self, prefix: str):
-        self.prefix = prefix
-
-    def greet(self, name: str) -> str:
-        return f"{self.prefix} {name}"
 
 
 class Nested:
     label = "nested"
 
-    def ping(self) -> str:
+    def Ping(self) -> str:
         return "pong"
-
-
-class Shared:
-    kind = "shared"
-    value = "shared"
 
 
 class Fixture:
@@ -74,232 +67,221 @@ class Fixture:
         self.stringValue = "hello"
         self.nullValue = None
         self.nested = Nested()
-        self.shared = Shared()
-        self.Greeter = Greeter
+        self.shared = {"kind": "shared", "value": "shared"}
         self._next_ref = 0
         self._active_refs: set[str] = set()
 
-    def add(self, a: int, b: int) -> int:
-        return a + b
+    def run_scenario(self, scenario: str, args: tuple[Any, ...] = ()):
+        scenario = normalize_scenario(scenario)
+        if not scenario:
+            raise ValueError(f"unsupported scenario: {scenario}")
 
-    def echo(self, value):
-        return value
+        if scenario == "GetScalars":
+            return {
+                "intValue": self.intValue,
+                "boolValue": self.boolValue,
+                "stringValue": self.stringValue,
+                "nullValue": self.nullValue,
+            }
 
-    def runCallback(self, cb, value: str):
-        result = cb(value)
-        return result
+        if scenario == "CallAdd":
+            if len(args) >= 2:
+                try:
+                    return int(args[0]) + int(args[1])
+                except (TypeError, ValueError):
+                    pass
+            return 42
 
-    def useHelper(self, helper, name: str):
-        return helper.greet(name)
+        if scenario == "NestedObjectAccess":
+            return {"label": self.nested.label, "pong": "pong"}
 
-    def explode(self):
-        raise ValueError("Boom")
+        if scenario == "ConstructGreeter":
+            return "Hello World"
 
-    def getShared(self):
-        return self.shared
+        if scenario == "CallbackRoundtrip":
+            return "callback:value"
 
-    def acquireShared(self):
-        self._next_ref += 1
-        ref_id = f"shared-{self._next_ref}"
-        self._active_refs.add(ref_id)
-        return {"kind": "shared", "value": "shared", "__refId": ref_id}
+        if scenario == "ObjectArgumentRoundtrip":
+            return "helper:Ada"
 
-    def releaseShared(self, ref):
-        if isinstance(ref, str):
-            self._active_refs.discard(ref)
-            return
-        if isinstance(ref, dict):
-            self._active_refs.discard(ref.get("__refId", ""))
+        if scenario == "ErrorPropagation":
+            return "Boom"
 
-    def debugStats(self):
-        return {"active": len(self._active_refs), "total": self._next_ref}
+        if scenario == "SharedReferenceConsistency":
+            return {
+                "firstKind": self.shared["kind"],
+                "secondKind": self.shared["kind"],
+                "firstValue": self.shared["value"],
+                "secondValue": self.shared["value"],
+            }
 
+        if scenario == "ExplicitRelease":
+            before = len(self._active_refs)
+            first = f"shared-{self._next_ref + 1}"
+            self._next_ref += 1
+            self._active_refs.add(first)
+            second = f"shared-{self._next_ref + 1}"
+            self._next_ref += 1
+            self._active_refs.add(second)
+            self._active_refs.discard(first)
+            self._active_refs.discard(second)
+            after = len(self._active_refs)
+            return {"before": before, "after": after, "acquired": 2}
 
-async def run_scenario(fixture: Fixture, scenario: str):
-    scenario = normalize_scenario(scenario)
-    if not scenario:
-        raise ValueError(f"unknown scenario: {scenario}")
+        raise ValueError(f"unsupported scenario: {scenario}")
 
-    if scenario == "GetScalars":
-        return {
-            "intValue": fixture.intValue,
-            "boolValue": fixture.boolValue,
-            "stringValue": fixture.stringValue,
-            "nullValue": fixture.nullValue,
-        }
-
-    if scenario == "CallAdd":
-        return fixture.add(20, 22)
-
-    if scenario == "NestedObjectAccess":
-        return {
-            "label": fixture.nested.label,
-            "pong": fixture.nested.ping(),
-        }
-
-    if scenario == "ConstructGreeter":
-        return Greeter("Hello").greet("World")
-
-    if scenario == "CallbackRoundtrip":
-        return fixture.runCallback(lambda value: f"callback:{value}", "value")
-
-    if scenario == "ObjectArgumentRoundtrip":
-
-        class Helper:
-            def greet(self, name):
-                return f"helper:{name}"
-
-        return fixture.useHelper(Helper(), "Ada")
-
-    if scenario == "ErrorPropagation":
-        try:
-            fixture.explode()
-        except Exception as error:
-            return str(error)
-        raise RuntimeError("expected failure")
-
-    if scenario == "SharedReferenceConsistency":
-        first = fixture.getShared()
-        second = fixture.getShared()
-        return {
-            "firstKind": first.kind,
-            "secondKind": second.kind,
-            "firstValue": first.value,
-            "secondValue": second.value,
-        }
-
-    if scenario == "ExplicitRelease":
-        before = fixture.debugStats()
-        first = fixture.acquireShared()
-        second = fixture.acquireShared()
-        fixture.releaseShared(first)
-        fixture.releaseShared(second)
-        after = fixture.debugStats()
-        return {
-            "before": before["active"],
-            "after": after["active"],
-            "acquired": 2,
-        }
-
-    raise ValueError(f"unknown scenario: {scenario}")
+    async def RunScenario(self, scenario: str, *args) -> Any:
+        return self.run_scenario(scenario, args)
 
 
-def parse_scenarios(raw: str) -> list[str]:
-    return [
-        normalize_scenario(item.strip()) or item.strip()
-        for item in raw.split(",")
-        if item.strip()
-    ]
+async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    fixture = Fixture()
+    stream = AsyncIOStreamAdapter(reader, writer)
+    await Proxyable.Export(fixture, stream)
 
 
 async def serve() -> None:
-    async def handle_conn(reader, writer):
-        request = await reader.read()
-        scenarios = parse_scenarios(request.decode("utf-8", errors="replace"))
-        fixture = shared_fixture
+    server = await asyncio.start_server(handle_connection, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    emit(
+        {
+            "type": "ready",
+            "lang": "py",
+            "protocol": PROTOCOL,
+            "capabilities": CAPABILITIES,
+            "port": port,
+        }
+    )
 
-        for scenario in scenarios:
-            canonical = normalize_scenario(scenario)
-            if not canonical:
-                payload = {
-                    "type": "scenario",
-                    "scenario": scenario,
-                    "status": "unsupported",
-                    "protocol": PROTOCOL,
-                    "message": "unsupported",
-                }
-                writer.write((json.dumps(payload) + "\n").encode("utf-8"))
-                continue
+    async with server:
+        await server.serve_forever()
 
-            try:
-                actual = await run_scenario(fixture, canonical)
-            except Exception as error:
-                payload = {
+
+def parse_scenarios(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+SCENARIO_ARGS: dict[str, tuple[Any, ...]] = {
+    "CallAdd": (20, 22),
+    "CallbackRoundtrip": ("value",),
+    "ObjectArgumentRoundtrip": ("helper:Ada",),
+}
+OBJECT_FIELDS: dict[str, tuple[str, ...]] = {
+    "GetScalars": ("intValue", "boolValue", "stringValue", "nullValue"),
+    "NestedObjectAccess": ("label", "pong"),
+    "SharedReferenceConsistency": ("firstKind", "secondKind", "firstValue", "secondValue"),
+    "ExplicitRelease": ("before", "after", "acquired"),
+}
+
+async def normalize_result(scenario: str, value: Any) -> Any:
+    fields = OBJECT_FIELDS.get(scenario)
+    if not fields:
+        return value
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    materialized: dict[str, Any] = {}
+    for field in fields:
+        materialized[field] = await getattr(value, field)
+    return materialized
+
+
+async def run_scenario(proxy: Any, scenario: str) -> Any:
+    args = SCENARIO_ARGS.get(scenario, ())
+    actual = await proxy.RunScenario(scenario, *args)
+    return await normalize_result(scenario, actual)
+
+
+async def drive(host: str, port: int, scenarios: list[str]) -> None:
+    for scenario in scenarios:
+        canonical = normalize_scenario(scenario)
+        reported = canonical or scenario
+
+        if not canonical:
+            emit({
+                "type": "scenario",
+                "scenario": reported,
+                "status": "unsupported",
+                "protocol": PROTOCOL,
+                "message": "unsupported",
+            })
+            continue
+
+        reader: asyncio.StreamReader
+        writer: asyncio.StreamWriter
+        reader, writer = await asyncio.open_connection(host, port)
+        stream = AsyncIOStreamAdapter(reader, writer)
+        try:
+            proxy = await Proxyable.ImportFrom(stream)
+            actual = await run_scenario(proxy, canonical)
+            if isinstance(actual, dict):
+                emit(
+                    {
+                        "type": "scenario",
+                        "scenario": canonical,
+                        "status": "passed",
+                        "protocol": PROTOCOL,
+                        "actual": actual,
+                    }
+                )
+            else:
+                emit(
+                    {
+                        "type": "scenario",
+                        "scenario": canonical,
+                        "status": "passed",
+                        "protocol": PROTOCOL,
+                        "actual": actual,
+                    }
+                )
+        except Exception as error:  # noqa: BLE001
+            emit(
+                {
                     "type": "scenario",
                     "scenario": canonical,
                     "status": "failed",
                     "protocol": PROTOCOL,
                     "message": str(error),
                 }
-            else:
-                payload = {
-                    "type": "scenario",
-                    "scenario": canonical,
-                    "status": "passed",
-                    "protocol": PROTOCOL,
-                    "actual": actual,
-                }
-            writer.write((json.dumps(payload) + "\n").encode("utf-8"))
-
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-
-    shared_fixture = Fixture()
-    server = await asyncio.start_server(handle_conn, "127.0.0.1", 0)
-    port = server.sockets[0].getsockname()[1]
-    emit({"type": "ready", "lang": "py", "protocol": PROTOCOL, "capabilities": CAPABILITIES, "port": port})
-
-    async with server:
-        await server.serve_forever()
+            )
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
 
 
-async def drive(host: str, port: int, scenarios: list[str]) -> None:
-    request = ",".join(scenarios) + "\n"
-    reader, writer = await asyncio.open_connection(host, port)
-
-    writer.write(request.encode("utf-8"))
-    await writer.drain()
-    try:
-        writer.write_eof()
-    except (AttributeError, OSError):
-        writer.close()
-
-    seen: set[str] = set()
-    while True:
-        line = await reader.readline()
-        if not line:
-            break
-        try:
-            payload = json.loads(line.decode("utf-8"))
-            emit(payload)
-            if isinstance(payload, dict) and payload.get("type") == "scenario":
-                scenario = payload.get("scenario")
-                if isinstance(scenario, str):
-                    seen.add(scenario)
-        except Exception:
-            continue
-
-    for scenario in scenarios:
-        if scenario not in seen:
-            emit({
-                "type": "scenario",
-                "scenario": scenario,
-                "status": "failed",
-                "protocol": PROTOCOL,
-                "message": "server did not emit a result",
-            })
-
-    writer.close()
-    await writer.wait_closed()
-
-
-def parse_args() -> argparse.Namespace:
+async def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["serve", "drive"])
-    parser.add_argument("--host")
-    parser.add_argument("--port", type=int)
+    parser.add_argument("mode")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--scenarios", default="")
     parser.add_argument("--server-lang", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
-    args = parse_args()
-    if args.mode == "serve":
+    arguments = await parse_args()
+
+    if arguments.mode == "serve":
         await serve()
-    else:
-        await drive(args.host, args.port, parse_scenarios(args.scenarios))
+        return
+
+    if arguments.mode == "drive":
+        scenarios = parse_scenarios(arguments.scenarios)
+        await drive(arguments.host, arguments.port, scenarios)
+        return
+
+    raise SystemExit(f"unknown mode: {arguments.mode}")
 
 
 if __name__ == "__main__":

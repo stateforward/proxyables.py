@@ -50,23 +50,26 @@ class ImportedProxyable:
 
     async def _handle_stream(self, stream):
         try:
-            data = await read_message(stream)
-            if not data:
-                return 
-            
-            instruction = data if isinstance(data, ProxyInstruction) else decode(data)
-            # Support execute and release
-            result = await self._execute_incoming(instruction)
-            
-            resp = encode(result)
-            await stream.write(resp)
-            await stream.close()
+            while True:
+                data = await read_message(stream)
+                if not data:
+                    return
+
+                instruction = data if isinstance(data, ProxyInstruction) else decode(data)
+                result = await self._execute_incoming(instruction)
+
+                resp = encode(result)
+                await stream.write(resp)
         except Exception as e:
             try:
                 err = create_throw_instruction(ProxyError(message=str(e)))
                 await stream.write(encode(err))
-                await stream.close()
             except:
+                pass
+        finally:
+            try:
+                await stream.close()
+            except Exception:
                 pass
     
     async def _execute_incoming(self, instruction: ProxyInstruction):

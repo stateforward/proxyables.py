@@ -50,27 +50,27 @@ class ExportedProxyable:
             asyncio.create_task(self._handle_stream(stream))
 
     async def _handle_stream(self, stream):
-        # Read request
         try:
-            data = await read_message(stream)
-            if not data:
-                return 
-            
-            instruction = data if isinstance(data, ProxyInstruction) else decode(data)
-            # Should be EXECUTE kind
-            result = await self._execute(instruction)
-            
-            # Send result
-            resp = encode(result)
-            await stream.write(resp)
-            await stream.close()
+            while True:
+                data = await read_message(stream)
+                if not data:
+                    return
+
+                instruction = data if isinstance(data, ProxyInstruction) else decode(data)
+                result = await self._execute(instruction)
+
+                resp = encode(result)
+                await stream.write(resp)
         except Exception as e:
-            # print(f"Exported stream error: {e}")
             try:
                 err = create_throw_instruction(ProxyError(message=str(e)))
                 await stream.write(encode(err))
-                await stream.close()
             except:
+                pass
+        finally:
+            try:
+                await stream.close()
+            except Exception:
                 pass
 
     async def _execute(self, instruction: ProxyInstruction) -> ProxyInstruction:
