@@ -57,3 +57,9 @@ class ObjectRegistry:
             self.counts.pop(id_, None)
         else:
             self.counts[id_] = count
+
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "entries": len(self.map),
+            "retains": sum(self.counts.values()),
+        }

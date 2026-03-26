@@ -74,10 +74,15 @@ class ExportedProxyable:
                 pass
 
     async def _execute(self, instruction: ProxyInstruction) -> ProxyInstruction:
+        if instruction.kind == ProxyInstructionKinds.RELEASE:
+            ref_id = instruction.data[0]
+            self.registry.delete(ref_id)
+            return create_return_instruction(self._create_value(None))
+
         if instruction.kind != ProxyInstructionKinds.EXECUTE:
             return create_throw_instruction(ProxyError("Expected EXECUTE instruction"))
         
-        stack = []
+        stack: list[Any] = []
         instructions: List[ProxyInstruction] = instruction.data
         
         # Start with root object as current target context?
@@ -94,24 +99,13 @@ class ExportedProxyable:
         for instr in instructions:
             try:
                 if instr.kind == ProxyValueKinds.REFERENCE:
-                    stack.append(instr)
+                    target = self.registry.get(instr.data)
+                    if target is None:
+                        return create_throw_instruction(ProxyError(f"Object {instr.data} not found"))
+                    stack.append(target)
                     continue
                 
-                target = self.root_object
-                # Resolve target from stack if present
-                if stack:
-                    top = stack[-1]
-                    if top.kind == ProxyValueKinds.REFERENCE:
-                        ref_id = top.data
-                        target = self.registry.get(ref_id)
-                        if target is None:
-                             return create_throw_instruction(ProxyError(f"Object {ref_id} not found"))
-                        stack.pop() # Consume reference?
-                        # In TS implementation: "Let's assume `get` consumes the subject from stack." -> Yes.
-                    elif top.kind == ProxyInstructionKinds.RETURN:
-                        # Chained operations on result?
-                        # Usually RETURN wraps UnproxyableValue.
-                        pass # TODO
+                target = stack.pop() if stack else self.root_object
 
                 result = await self._process_instruction(instr, target)
                 stack.append(result)
@@ -123,15 +117,9 @@ class ExportedProxyable:
              
         # Pop final result
         final = stack.pop()
-        # If it's a raw value, wrap in RETURN?
-        # Usually instructions return ProxyInstruction (RETURN/THROW/VAL)
-        # We should ensure we return a RETURN instruction.
-        if final.kind != ProxyInstructionKinds.RETURN and final.kind != ProxyInstructionKinds.THROW:
-             return create_return_instruction(final)
-        
-        return final
+        return create_return_instruction(self._create_value(final))
 
-    async def _process_instruction(self, instr: ProxyInstruction, target: Any) -> ProxyInstruction:
+    async def _process_instruction(self, instr: ProxyInstruction, target: Any) -> Any:
         if instr.kind == ProxyInstructionKinds.GET:
             key = instr.data[0]
             if isinstance(target, (list, tuple)) and isinstance(key, (int, float)):
@@ -144,7 +132,7 @@ class ExportedProxyable:
                  val = target.get(key)
             else:
                  val = getattr(target, key, None)
-            return self._create_value(val)
+            return val
             
         elif instr.kind == ProxyInstructionKinds.APPLY:
             args = instr.data 
@@ -156,7 +144,7 @@ class ExportedProxyable:
             else:
                 res = target(*hydrated_args)
             
-            return self._create_value(res)
+            return res
             
         elif instr.kind == ProxyInstructionKinds.CONSTRUCT:
             args = instr.data
@@ -164,12 +152,12 @@ class ExportedProxyable:
             
             # Construct assuming target is a class
             res = target(*hydrated_args)
-            return self._create_value(res)
+            return res
 
         elif instr.kind == ProxyInstructionKinds.RELEASE:
              ref_id = instr.data[0]
              self.registry.delete(ref_id)
-             return self._create_value(None)
+             return None
              
         else:
             raise ValueError(f"Unknown instruction kind: {instr.kind}")
@@ -236,3 +224,6 @@ class ExportedProxyable:
             return data
                 
         return arg 
+
+    def snapshot(self) -> dict[str, int]:
+        return self.registry.snapshot()

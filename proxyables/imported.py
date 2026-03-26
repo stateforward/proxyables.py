@@ -32,10 +32,10 @@ async def read_message(stream):
         unpacker.feed(chunk)
 
 class ImportedProxyable:
-    def __init__(self, session: Session, listen: bool = True):
+    def __init__(self, session: Session, listen: bool = True, registry: ObjectRegistry | None = None):
         self.session = session
         self.stream_pool = StreamPool(session, reuse=False)
-        self.registry = ObjectRegistry()
+        self.registry = registry or ObjectRegistry()
         self.running = True
         if listen:
             asyncio.create_task(self._accept_loop())
@@ -240,5 +240,28 @@ class ProxyCursor:
 
     @staticmethod
     def _release_remote(session, ref_id):
-        # This runs in GC callback, possibly unsure context.
-        pass 
+        async def _send_release():
+            stream = None
+            try:
+                stream = await session.open_stream()
+                await stream.write(encode(create_release_instruction(ref_id)))
+                await read_message(stream)
+            except Exception:
+                return
+            finally:
+                if stream is not None:
+                    try:
+                        await stream.close()
+                    except Exception:
+                        pass
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(_send_release())
+            return
+
+        loop.create_task(_send_release())
+
+    def snapshot(self) -> dict[str, int]:
+        return self.registry.snapshot()
