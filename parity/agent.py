@@ -5,19 +5,42 @@ import argparse
 import asyncio
 import json
 import sys
+import re
 
 PROTOCOL = "parity-json-v1"
-CAPABILITIES = [
-    "get_scalars",
-    "call_add",
-    "nested_object_access",
-    "construct_greeter",
-    "callback_roundtrip",
-    "object_argument_roundtrip",
-    "error_propagation",
-    "shared_reference_consistency",
-    "explicit_release",
-]
+
+CANONICAL_SCENARIOS = (
+    "GetScalars",
+    "CallAdd",
+    "NestedObjectAccess",
+    "ConstructGreeter",
+    "CallbackRoundtrip",
+    "ObjectArgumentRoundtrip",
+    "ErrorPropagation",
+    "SharedReferenceConsistency",
+    "ExplicitRelease",
+)
+CAPABILITIES = list(CANONICAL_SCENARIOS)
+CAPABILITY_SET = set(CAPABILITIES)
+WORD_BOUNDARY = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+
+
+def to_pascal_case(raw: str) -> str:
+    parts = WORD_BOUNDARY.findall(str(raw))
+    if not parts:
+        return "".join(
+            segment.capitalize()
+            for segment in re.split(r"[^a-zA-Z0-9]+", str(raw))
+            if segment
+        )
+    return "".join(part[:1].upper() + part[1:].lower() for part in parts)
+
+
+def normalize_scenario(raw: str) -> str:
+    canonical = to_pascal_case(raw)
+    if canonical in CAPABILITY_SET:
+        return canonical
+    return ""
 
 
 def emit(payload: dict) -> None:
@@ -93,7 +116,11 @@ class Fixture:
 
 
 async def run_scenario(fixture: Fixture, scenario: str):
-    if scenario == "get_scalars":
+    scenario = normalize_scenario(scenario)
+    if not scenario:
+        raise ValueError(f"unknown scenario: {scenario}")
+
+    if scenario == "GetScalars":
         return {
             "intValue": fixture.intValue,
             "boolValue": fixture.boolValue,
@@ -101,22 +128,22 @@ async def run_scenario(fixture: Fixture, scenario: str):
             "nullValue": fixture.nullValue,
         }
 
-    if scenario == "call_add":
+    if scenario == "CallAdd":
         return fixture.add(20, 22)
 
-    if scenario == "nested_object_access":
+    if scenario == "NestedObjectAccess":
         return {
             "label": fixture.nested.label,
             "pong": fixture.nested.ping(),
         }
 
-    if scenario == "construct_greeter":
+    if scenario == "ConstructGreeter":
         return Greeter("Hello").greet("World")
 
-    if scenario == "callback_roundtrip":
+    if scenario == "CallbackRoundtrip":
         return fixture.runCallback(lambda value: f"callback:{value}", "value")
 
-    if scenario == "object_argument_roundtrip":
+    if scenario == "ObjectArgumentRoundtrip":
 
         class Helper:
             def greet(self, name):
@@ -124,14 +151,14 @@ async def run_scenario(fixture: Fixture, scenario: str):
 
         return fixture.useHelper(Helper(), "Ada")
 
-    if scenario == "error_propagation":
+    if scenario == "ErrorPropagation":
         try:
             fixture.explode()
         except Exception as error:
             return str(error)
         raise RuntimeError("expected failure")
 
-    if scenario == "shared_reference_consistency":
+    if scenario == "SharedReferenceConsistency":
         first = fixture.getShared()
         second = fixture.getShared()
         return {
@@ -141,7 +168,7 @@ async def run_scenario(fixture: Fixture, scenario: str):
             "secondValue": second.value,
         }
 
-    if scenario == "explicit_release":
+    if scenario == "ExplicitRelease":
         before = fixture.debugStats()
         first = fixture.acquireShared()
         second = fixture.acquireShared()
@@ -158,7 +185,11 @@ async def run_scenario(fixture: Fixture, scenario: str):
 
 
 def parse_scenarios(raw: str) -> list[str]:
-    return [item.strip() for item in raw.split(",") if item.strip()]
+    return [
+        normalize_scenario(item.strip()) or item.strip()
+        for item in raw.split(",")
+        if item.strip()
+    ]
 
 
 async def serve() -> None:
@@ -168,7 +199,8 @@ async def serve() -> None:
         fixture = shared_fixture
 
         for scenario in scenarios:
-            if scenario not in CAPABILITIES:
+            canonical = normalize_scenario(scenario)
+            if not canonical:
                 payload = {
                     "type": "scenario",
                     "scenario": scenario,
@@ -180,11 +212,11 @@ async def serve() -> None:
                 continue
 
             try:
-                actual = await run_scenario(fixture, scenario)
+                actual = await run_scenario(fixture, canonical)
             except Exception as error:
                 payload = {
                     "type": "scenario",
-                    "scenario": scenario,
+                    "scenario": canonical,
                     "status": "failed",
                     "protocol": PROTOCOL,
                     "message": str(error),
@@ -192,7 +224,7 @@ async def serve() -> None:
             else:
                 payload = {
                     "type": "scenario",
-                    "scenario": scenario,
+                    "scenario": canonical,
                     "status": "passed",
                     "protocol": PROTOCOL,
                     "actual": actual,
