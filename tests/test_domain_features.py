@@ -17,7 +17,7 @@ class HelperServer:
         async def handle_conn(reader, writer):
             stream = AsyncIOStreamAdapter(reader, writer)
             # Export and keep running
-            await Proxyable.export(self.target, stream)
+            await Proxyable.Export(self.target, stream)
             
         self.server = await asyncio.start_server(handle_conn, '127.0.0.1', port)
         addr = self.server.sockets[0].getsockname()
@@ -39,7 +39,7 @@ class HelperClient:
         reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
         self.writer = writer
         stream = AsyncIOStreamAdapter(reader, writer)
-        return await Proxyable.import_from(stream)
+        return await Proxyable.ImportFrom(stream)
 
     async def close(self):
         if self.writer:
@@ -246,4 +246,3 @@ async def test_domain_nulls(proxy_pair):
     
     res = await proxy.get_none()
     assert res is None
-

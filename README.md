@@ -33,14 +33,14 @@ class API:
         return a + b
 
 # stream is any asyncio duplex stream
-exported = await Proxyable.export(API(), stream)
+exported = await Proxyable.Export(API(), stream)
 ```
 
 **Client (Importing the object):**
 ```python
 from proxyables import Proxyable
 
-proxy = await Proxyable.import_from(stream)
+proxy = await Proxyable.ImportFrom(stream)
 
 # Usage - feels completely local!
 result = await proxy.echo("hello")    # "echo hello"
