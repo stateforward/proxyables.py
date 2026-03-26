@@ -1,0 +1,23 @@
+
+# Yamux Protocol Constants
+
+PROTOCOL_VERSION = 0
+
+# Frame Types
+TYPE_DATA = 0x0
+TYPE_WINDOW_UPDATE = 0x1
+TYPE_PING = 0x2
+TYPE_GO_AWAY = 0x3
+
+# Flags
+FLAG_SYN = 0x1
+FLAG_ACK = 0x2
+FLAG_FIN = 0x4
+FLAG_RST = 0x8
+
+# Error Codes (GoAway)
+ERR_NORMAL = 0x0
+ERR_PROTOCOL = 0x1
+ERR_INTERNAL = 0x2
+
+HEADER_LENGTH = 12
