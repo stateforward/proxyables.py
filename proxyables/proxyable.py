@@ -17,6 +17,10 @@ class Proxyable:
         return exported
 
     @staticmethod
+    async def Export(obj: Any, stream: DuplexStream):
+        return await Proxyable.export(obj, stream)
+
+    @staticmethod
     async def import_from(stream: DuplexStream):
         # Create Yamux Session 
         session = Session(stream, is_client=True)
@@ -25,3 +29,7 @@ class Proxyable:
         imported = ImportedProxyable(session)
         # Return proxy cursor
         return imported.create_proxy()
+
+    @staticmethod
+    async def ImportFrom(stream: DuplexStream):
+        return await Proxyable.import_from(stream)

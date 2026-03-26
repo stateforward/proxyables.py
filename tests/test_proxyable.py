@@ -35,7 +35,7 @@ async def test_e2e_rpc():
     async def handle_server_conn(reader, writer):
         target = TargetObject()
         stream = AsyncIOStreamAdapter(reader, writer)
-        exported = await Proxyable.export(target, stream)
+        exported = await Proxyable.Export(target, stream)
         # Keep running? Exported starts loops.
         
     server = await asyncio.start_server(handle_server_conn, '127.0.0.1', 8889)
@@ -44,7 +44,7 @@ async def test_e2e_rpc():
     # 2. Start Client
     reader, writer = await asyncio.open_connection('127.0.0.1', 8889)
     stream = AsyncIOStreamAdapter(reader, writer)
-    proxy = await Proxyable.import_from(stream)
+    proxy = await Proxyable.ImportFrom(stream)
     
     # 3. Test interactions
     
