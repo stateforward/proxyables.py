@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -632,6 +633,64 @@ async def drive(arguments: argparse.Namespace) -> None:
             emit({"type": "scenario", "scenario": canonical, "status": "failed", "protocol": PROTOCOL, "message": str(error)})
 
 
+def build_benchmark_metrics(samples: list[float]) -> dict[str, float]:
+    ordered = sorted(samples)
+    total_ms = sum(samples)
+
+    def pick(fraction: float) -> float:
+        if not ordered:
+            return 0.0
+        index = max(0, min(len(ordered) - 1, round((len(ordered) - 1) * fraction)))
+        return ordered[index]
+
+    return {
+        "totalMs": total_ms,
+        "avgMs": 0.0 if not samples else total_ms / len(samples),
+        "ops": 0.0 if total_ms <= 0 else (len(samples) / total_ms) * 1000,
+        "p50Ms": pick(0.5),
+        "p95Ms": pick(0.95),
+        "minMs": ordered[0] if ordered else 0.0,
+        "maxMs": ordered[-1] if ordered else 0.0,
+    }
+
+
+async def bench(arguments: argparse.Namespace) -> None:
+    iterations = max(1, int(arguments.iterations))
+    warmup = max(0, int(arguments.warmup))
+    for scenario in parse_scenarios(arguments.scenarios):
+        canonical = normalize_scenario(scenario) or scenario
+        if canonical not in CAPABILITIES:
+            emit({"type": "benchmark", "scenario": canonical, "status": "unsupported", "protocol": PROTOCOL, "message": "unsupported"})
+            continue
+        try:
+            _, writer, proxy = await create_proxy(arguments.host, arguments.port)
+            try:
+                for _ in range(warmup):
+                    raw = await proxy.RunScenario(canonical, *build_scenario_args(canonical, arguments))
+                    await normalize_result(canonical, raw)
+                samples: list[float] = []
+                for _ in range(iterations):
+                    start = time.perf_counter()
+                    raw = await proxy.RunScenario(canonical, *build_scenario_args(canonical, arguments))
+                    await normalize_result(canonical, raw)
+                    samples.append((time.perf_counter() - start) * 1000)
+                emit(
+                    {
+                        "type": "benchmark",
+                        "scenario": canonical,
+                        "status": "passed",
+                        "protocol": PROTOCOL,
+                        "iterations": iterations,
+                        "warmup": warmup,
+                        "metrics": build_benchmark_metrics(samples),
+                    }
+                )
+            finally:
+                await close_writer(writer, False)
+        except Exception as error:  # noqa: BLE001
+            emit({"type": "benchmark", "scenario": canonical, "status": "failed", "protocol": PROTOCOL, "message": str(error)})
+
+
 async def run_bridge(arguments: argparse.Namespace) -> None:
     _, upstream_writer, upstream_proxy = await create_proxy(arguments.upstream_host, arguments.upstream_port)
 
@@ -681,6 +740,8 @@ async def parse_args() -> argparse.Namespace:
     parser.add_argument("--stress-iterations", type=int, default=128)
     parser.add_argument("--payload-bytes", type=int, default=32768)
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--iterations", type=int, default=1000)
+    parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--cleanup-timeout", type=float, default=5.0)
     parser.add_argument("--disconnect-timeout", type=float, default=5.0)
     parser.add_argument("--upstream-host", default="127.0.0.1")
@@ -696,6 +757,9 @@ async def main() -> None:
         return
     if arguments.mode == "drive":
         await drive(arguments)
+        return
+    if arguments.mode == "bench":
+        await bench(arguments)
         return
     if arguments.mode == "bridge":
         await run_bridge(arguments)
